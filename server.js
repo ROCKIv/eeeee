@@ -2,160 +2,110 @@ const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
-const fs = require('fs').promises;
-const path = require('path');
 const app = express();
 
-puppeteer.use(StealthPlugin());
-
+// Usar el puerto de la variable de entorno PORT (Render lo asigna como 8080) o 3000 como fallback
 const port = process.env.PORT || 3000;
 
-app.use(express.json({ limit: '1mb' }));
-app.use(cors({ origin: true, optionsSuccessStatus: 200 }));
+puppeteer.use(StealthPlugin()); // Activar el modo stealth
 
-// Configuración del executablePath
-const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
-const executablePath = `${cacheDir}/chrome/linux/134.0.6998.88/chrome-linux/chrome`;
-
-// Pool de navegadores
-let browserPool = null;
-
-const initializeBrowser = async () => {
-  console.log("Inicializando Puppeteer al arrancar el servidor...");
-  try {
-    // Verificar si el ejecutable existe
-    await fs.access(executablePath);
-    console.log(`Confirmado: ${executablePath} existe y es accesible`);
-
-    console.log("Lanzando Puppeteer con Stealth...");
-    browserPool = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-extensions',
-        '--no-first-run',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-      ],
-      executablePath,
-    });
-    console.log("Puppeteer lanzado exitosamente");
-  } catch (error) {
-    console.error("Error al inicializar el navegador:", error.message);
-    throw error;
-  }
-};
-
-// Función para obtener el navegador
-const getBrowser = async () => {
-  if (!browserPool) {
-    throw new Error("El navegador no se inicializó correctamente al arrancar el servidor.");
-  }
-  return browserPool;
-};
+app.use(express.json());
+app.use(cors());
 
 // Endpoint POST /track
 app.post('/track', async (req, res) => {
-  const { trackingNumber } = req.body;
+    const { trackingNumber } = req.body;
 
-  if (!trackingNumber || typeof trackingNumber !== 'string') {
-    return res.status(400).json({ error: 'Valid tracking number is required' });
-  }
+    if (!trackingNumber) {
+        return res.status(400).json({ error: 'Tracking number is required' });
+    }
 
-  try {
-    const data = await scrape17track(trackingNumber.trim());
-    console.log("Enviando datos al frontend:", data);
-    res.json(data);
-  } catch (error) {
-    console.error("Error en /track:", error.message);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+    try {
+        const data = await scrape17track(trackingNumber);
+        console.log("Enviando datos al frontend:", data);
+        res.json(data);
+    } catch (error) {
+        console.error("Error en /track:", error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
-// Función optimizada para scraping
+// Función para hacer scraping en 17track
 async function scrape17track(trackingNumber) {
-  const browser = await getBrowser();
-  let page;
-  try {
-    page = await browser.newPage();
-
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const resourceType = req.resourceType();
-      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
+    console.log("Lanzando Puppeteer con Stealth...");
+    const browser = await puppeteer.launch({
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage', // Optimiza memoria en Render
+            '--disable-cache',
+            '--single-process', // Reduce uso de recursos
+            '--no-zygote' // Reduce overhead en contenedores
+        ]
     });
+    const page = await browser.newPage();
 
     await page.setCacheEnabled(false);
-    await page.setViewport({ width: 1280, height: 720 });
 
     console.log("Trackeando con número:", trackingNumber);
     const url = `https://t.17track.net/es#nums=${trackingNumber}`;
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.goto(url, {
+        waitUntil: 'networkidle2',
+        timeout: 20000
+    });
 
-    console.log("Esperando contenedor de rastreo...");
-    await Promise.all([
-      page.waitForSelector('.track-container, .tracklist-item', { timeout: 10000 }),
-      page.waitForSelector('.trn-block', { timeout: 10000 }),
-    ]);
+    console.log("Forzando recarga de datos...");
+    await page.reload({ waitUntil: 'networkidle2', timeout: 20000 });
+
+    const pageTitle = await page.title();
+    console.log("Título de la página:", pageTitle);
+
+    const displayedTrackingNumber = await page.evaluate(() => {
+        const input = document.querySelector('input[name="nums"]') || document.querySelector('.track-num');
+        return input ? input.value || input.textContent.trim() : 'No encontrado';
+    });
+    console.log("Número de seguimiento mostrado en la página:", displayedTrackingNumber);
+
+    console.log("Esperando el contenedor de rastreo...");
+    try {
+        await page.waitForSelector('.track-container, .tracklist-item', { timeout: 15000 });
+        await page.waitForSelector('.trn-block', { timeout: 15000 });
+    } catch (error) {
+        console.error("Error esperando selectores:", error);
+        await browser.close();
+        throw new Error('No se encontraron los elementos de rastreo');
+    }
 
     console.log("Extrayendo datos...");
     const data = await page.evaluate(() => {
-      const courier = document.querySelector('.provider-name')?.textContent.trim() || 'Desconocido';
-      const status = document.querySelector('.text-capitalize[title]')?.textContent.trim() ||
-                     document.querySelector('.trn-block dd:first-child p')?.textContent.trim() || 'Sin información';
+        const courier = document.querySelector('.provider-name')?.textContent.trim() || 'Desconocido';
+        const statusElement = document.querySelector('.text-capitalize[title]');
+        const status = statusElement ? statusElement.textContent.trim() : document.querySelector('.trn-block dd:first-child p')?.textContent.trim() || 'Sin información';
 
-      const eventElements = document.querySelectorAll('.trn-block dd');
-      const events = Array.from(eventElements, event => {
-        const date = event.querySelector('time')?.textContent.trim() || 'Sin fecha';
-        const description = event.querySelector('p')?.textContent.trim() || 'Sin descripción';
-        const locationMatch = description.match(/【(.+?)】/) || description.match(/^(.+?),/);
-        const location = locationMatch ? locationMatch[1] || locationMatch[0].replace(/,$/, '') : 'Sin ubicación';
-        return { date, location, description };
-      });
+        const eventElements = document.querySelectorAll('.trn-block dd');
+        const events = Array.from(eventElements).map(event => {
+            const date = event.querySelector('time')?.textContent.trim() || 'Sin fecha';
+            const description = event.querySelector('p')?.textContent.trim() || 'Sin descripción';
+            const locationMatch = description.match(/【(.+?)】/) || description.match(/^(.+?),/);
+            const location = locationMatch ? locationMatch[1] || locationMatch[0].replace(/,$/, '') : 'Sin ubicación';
+            return { date, location, description };
+        });
 
-      return { courier, status, events };
+        return { courier, status, events };
     });
 
     console.log("Datos extraídos:", data);
+    await browser.close();
     return data;
-  } catch (error) {
-    console.error("Error en scrape17track:", error.message);
-    throw error;
-  } finally {
-    if (page) await page.close();
-  }
 }
 
-// Cerrar el navegador al apagar el servidor
-process.on('SIGTERM', async () => {
-  if (browserPool) {
-    await browserPool.close();
-    browserPool = null;
-  }
-  process.exit(0);
+// Endpoint básico para verificar que el servidor está vivo
+app.get('/health', (req, res) => {
+    res.status(200).send('OK');
 });
 
-app.get('/health', (req, res) => res.status(200).send('OK'));
-
-// Iniciar el servidor y el navegador
-const startServer = async () => {
-  try {
-    await initializeBrowser();
-    app.listen(port, () => {
-      console.log(`Backend corriendo en puerto ${port}`);
-    });
-  } catch (error) {
-    console.error("Error al iniciar el servidor:", error.message);
-    process.exit(1);
-  }
-};
-
-startServer();
+// Escuchar en el puerto asignado por Render
+app.listen(port, () => {
+    console.log(`Backend corriendo en puerto ${port}`);
+});
