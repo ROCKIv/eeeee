@@ -2,14 +2,66 @@ const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
+const { install, resolveBuildId } = require('@puppeteer/browsers');
 const app = express();
 
 puppeteer.use(StealthPlugin());
 
 const port = process.env.PORT || 3000;
 
-app.use(express.json({ limit: '1mb' })); // Limitar el tamaño del payload
+app.use(express.json({ limit: '1mb' }));
 app.use(cors({ origin: true, optionsSuccessStatus: 200 }));
+
+// Configuración para instalar Chrome
+async function setupBrowser() {
+  const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
+  const browser = 'chrome';
+  const platform = 'linux'; // Render usa Linux
+  const buildId = await resolveBuildId(browser, platform, 'stable'); // Versión estable de Chrome
+
+  console.log(`Instalando Chrome ${buildId} en ${cacheDir}...`);
+  await install({
+    browser,
+    platform,
+    buildId,
+    cacheDir,
+    downloadProgressCallback: (downloadedBytes, totalBytes) => {
+      console.log(`Descargando Chrome: ${downloadedBytes}/${totalBytes}`);
+    },
+  });
+
+  return `${cacheDir}/${browser}/${platform}/${buildId}/chrome-linux/chrome`;
+}
+
+// Pool de navegadores
+let browserPool = null;
+let executablePath = null;
+
+const getBrowser = async () => {
+  if (!browserPool) {
+    console.log("Configurando Puppeteer...");
+    if (!executablePath) {
+      executablePath = await setupBrowser(); // Instala Chrome la primera vez
+    }
+    console.log("Lanzando Puppeteer con Stealth...");
+    browserPool = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-extensions',
+        '--no-first-run',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+      ],
+      executablePath, // Usa la ruta instalada
+    });
+  }
+  return browserPool;
+};
 
 // Endpoint POST /track
 app.post('/track', async (req, res) => {
@@ -29,30 +81,6 @@ app.post('/track', async (req, res) => {
   }
 });
 
-// Pool de navegadores para reutilizar instancias
-let browserPool = null;
-const getBrowser = async () => {
-  if (!browserPool) {
-    console.log("Lanzando Puppeteer con Stealth...");
-    browserPool = await puppeteer.launch({
-      headless: 'new', // Usar headless moderno
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu', // Deshabilitar GPU
-        '--disable-extensions', // Reducir overhead
-        '--no-first-run',
-        '--disable-background-timer-throttling', // Evitar retrasos
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-      ],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined, // Usar Chromium preinstalado si está disponible
-    });
-  }
-  return browserPool;
-};
-
 // Función optimizada para scraping
 async function scrape17track(trackingNumber) {
   const browser = await getBrowser();
@@ -60,23 +88,22 @@ async function scrape17track(trackingNumber) {
   try {
     page = await browser.newPage();
 
-    // Optimizar recursos de la página
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const resourceType = req.resourceType();
       if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-        req.abort(); // Bloquear recursos innecesarios
+        req.abort();
       } else {
         req.continue();
       }
     });
 
-    await page.setCacheEnabled(false); // Deshabilitar cache del navegador
-    await page.setViewport({ width: 1280, height: 720 }); // Tamaño mínimo razonable
+    await page.setCacheEnabled(false);
+    await page.setViewport({ width: 1280, height: 720 });
 
     console.log("Trackeando con número:", trackingNumber);
     const url = `https://t.17track.net/es#nums=${trackingNumber}`;
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 }); // Más rápido que networkidle2
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
     console.log("Esperando contenedor de rastreo...");
     await Promise.all([
@@ -108,7 +135,7 @@ async function scrape17track(trackingNumber) {
     console.error("Error en scrape17track:", error.message);
     throw error;
   } finally {
-    if (page) await page.close(); // Cerrar página para liberar memoria
+    if (page) await page.close();
   }
 }
 
