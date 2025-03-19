@@ -4,6 +4,7 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
 const { install, resolveBuildId } = require('@puppeteer/browsers');
 const fs = require('fs').promises;
+const path = require('path');
 const app = express();
 
 puppeteer.use(StealthPlugin());
@@ -18,9 +19,10 @@ async function setupBrowser() {
   const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
   const browser = 'chrome';
   const platform = 'linux';
-  const buildId = await resolveBuildId(browser, platform, 'stable');
+  const buildId = await resolveBuildId(browser, platform, 'stable'); // Última versión estable
 
-  const expectedPath = `${cacheDir}/${browser}/${platform}/${buildId}/chrome-linux/chrome`;
+  const basePath = `${cacheDir}/${browser}/${platform}/${buildId}/chrome-linux`;
+  const expectedPath = `${basePath}/chrome`; // Ruta esperada del ejecutable
   console.log(`Verificando si Chrome existe en: ${expectedPath}`);
 
   try {
@@ -37,7 +39,15 @@ async function setupBrowser() {
         console.log(`Descargando Chrome: ${downloadedBytes}/${totalBytes}`);
       },
     });
-    console.log(`Instalación completada en ${expectedPath}`);
+    console.log(`Instalación completada en ${basePath}`);
+
+    // Verificar el contenido del directorio después de la instalación
+    const dirContents = await fs.readdir(basePath);
+    console.log(`Contenido del directorio ${basePath}:`, dirContents);
+
+    // Asegurarse de que el ejecutable tenga permisos
+    await fs.chmod(expectedPath, 0o755); // Dar permisos de ejecución
+    console.log(`Permisos ajustados para ${expectedPath}`);
   }
 
   return expectedPath;
@@ -49,7 +59,17 @@ let executablePath = null;
 
 const initializeBrowser = async () => {
   console.log("Inicializando Puppeteer al arrancar el servidor...");
-  executablePath = await setupBrowser(); // Instala Chrome al inicio
+  executablePath = await setupBrowser();
+  
+  // Verificar si el archivo existe antes de lanzar
+  try {
+    await fs.access(executablePath);
+    console.log(`Confirmado: ${executablePath} existe y es accesible`);
+  } catch (error) {
+    console.error(`Error: ${executablePath} no existe o no es accesible`, error);
+    throw error;
+  }
+
   console.log("Lanzando Puppeteer con Stealth...");
   try {
     browserPool = await puppeteer.launch({
@@ -74,7 +94,7 @@ const initializeBrowser = async () => {
   }
 };
 
-// Función para obtener el navegador (ya inicializado)
+// Función para obtener el navegador
 const getBrowser = async () => {
   if (!browserPool) {
     throw new Error("El navegador no se inicializó correctamente al arrancar el servidor.");
@@ -172,7 +192,7 @@ app.get('/health', (req, res) => res.status(200).send('OK'));
 // Iniciar el servidor y el navegador
 const startServer = async () => {
   try {
-    await initializeBrowser(); // Instala y lanza el navegador al inicio
+    await initializeBrowser();
     app.listen(port, () => {
       console.log(`Backend corriendo en puerto ${port}`);
     });
