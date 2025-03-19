@@ -19,10 +19,10 @@ async function setupBrowser() {
   const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
   const browser = 'chrome';
   const platform = 'linux';
-  const buildId = await resolveBuildId(browser, platform, 'stable'); // Última versión estable
+  const buildId = await resolveBuildId(browser, platform, 'stable');
 
   const basePath = `${cacheDir}/${browser}/${platform}/${buildId}/chrome-linux`;
-  const expectedPath = `${basePath}/chrome`; // Ruta esperada del ejecutable
+  const expectedPath = `${basePath}/chrome`;
   console.log(`Verificando si Chrome existe en: ${expectedPath}`);
 
   try {
@@ -39,15 +39,21 @@ async function setupBrowser() {
         console.log(`Descargando Chrome: ${downloadedBytes}/${totalBytes}`);
       },
     });
-    console.log(`Instalación completada en ${basePath}`);
+    console.log(`Instalación reportada como completada en ${basePath}`);
 
-    // Verificar el contenido del directorio después de la instalación
-    const dirContents = await fs.readdir(basePath);
-    console.log(`Contenido del directorio ${basePath}:`, dirContents);
-
-    // Asegurarse de que el ejecutable tenga permisos
-    await fs.chmod(expectedPath, 0o755); // Dar permisos de ejecución
-    console.log(`Permisos ajustados para ${expectedPath}`);
+    // Verificar si el directorio existe y tiene contenido
+    try {
+      const dirContents = await fs.readdir(basePath);
+      console.log(`Contenido del directorio ${basePath}:`, dirContents);
+      if (!dirContents.includes('chrome')) {
+        throw new Error(`El ejecutable 'chrome' no está presente en ${basePath}`);
+      }
+      await fs.chmod(expectedPath, 0o755); // Asegurar permisos de ejecución
+      console.log(`Permisos ajustados para ${expectedPath}`);
+    } catch (dirError) {
+      console.error(`Error al verificar el directorio ${basePath}:`, dirError.message);
+      throw dirError;
+    }
   }
 
   return expectedPath;
@@ -59,19 +65,11 @@ let executablePath = null;
 
 const initializeBrowser = async () => {
   console.log("Inicializando Puppeteer al arrancar el servidor...");
-  executablePath = await setupBrowser();
-  
-  // Verificar si el archivo existe antes de lanzar
   try {
-    await fs.access(executablePath);
+    executablePath = await setupBrowser();
     console.log(`Confirmado: ${executablePath} existe y es accesible`);
-  } catch (error) {
-    console.error(`Error: ${executablePath} no existe o no es accesible`, error);
-    throw error;
-  }
 
-  console.log("Lanzando Puppeteer con Stealth...");
-  try {
+    console.log("Lanzando Puppeteer con Stealth...");
     browserPool = await puppeteer.launch({
       headless: 'new',
       args: [
@@ -89,7 +87,7 @@ const initializeBrowser = async () => {
     });
     console.log("Puppeteer lanzado exitosamente");
   } catch (error) {
-    console.error("Error al lanzar Puppeteer:", error.message);
+    console.error("Error al inicializar el navegador:", error.message);
     throw error;
   }
 };
