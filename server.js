@@ -2,7 +2,6 @@ const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
-const { install, resolveBuildId } = require('@puppeteer/browsers');
 const fs = require('fs').promises;
 const path = require('path');
 const app = express();
@@ -14,59 +13,18 @@ const port = process.env.PORT || 3000;
 app.use(express.json({ limit: '1mb' }));
 app.use(cors({ origin: true, optionsSuccessStatus: 200 }));
 
-// Configuración para instalar Chrome
-async function setupBrowser() {
-  const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
-  const browser = 'chrome';
-  const platform = 'linux';
-  const buildId = await resolveBuildId(browser, platform, 'stable');
-
-  const basePath = `${cacheDir}/${browser}/${platform}/${buildId}/chrome-linux`;
-  const expectedPath = `${basePath}/chrome`;
-  console.log(`Verificando si Chrome existe en: ${expectedPath}`);
-
-  try {
-    await fs.access(expectedPath);
-    console.log(`Chrome encontrado en ${expectedPath}`);
-  } catch (error) {
-    console.log(`Chrome no encontrado. Instalando ${buildId} en ${cacheDir}...`);
-    await install({
-      browser,
-      platform,
-      buildId,
-      cacheDir,
-      downloadProgressCallback: (downloadedBytes, totalBytes) => {
-        console.log(`Descargando Chrome: ${downloadedBytes}/${totalBytes}`);
-      },
-    });
-    console.log(`Instalación reportada como completada en ${basePath}`);
-
-    // Verificar si el directorio existe y tiene contenido
-    try {
-      const dirContents = await fs.readdir(basePath);
-      console.log(`Contenido del directorio ${basePath}:`, dirContents);
-      if (!dirContents.includes('chrome')) {
-        throw new Error(`El ejecutable 'chrome' no está presente en ${basePath}`);
-      }
-      await fs.chmod(expectedPath, 0o755); // Asegurar permisos de ejecución
-      console.log(`Permisos ajustados para ${expectedPath}`);
-    } catch (dirError) {
-      console.error(`Error al verificar el directorio ${basePath}:`, dirError.message);
-      throw dirError;
-    }
-  }
-
-  return expectedPath;
-}
+// Configuración del executablePath
+const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
+const executablePath = `${cacheDir}/chrome/linux/134.0.6998.88/chrome-linux/chrome`;
 
 // Pool de navegadores
 let browserPool = null;
-let executablePath = null;
 
 const initializeBrowser = async () => {
   console.log("Inicializando Puppeteer al arrancar el servidor...");
   try {
-    executablePath = await setupBrowser();
+    // Verificar si el ejecutable existe
+    await fs.access(executablePath);
     console.log(`Confirmado: ${executablePath} existe y es accesible`);
 
     console.log("Lanzando Puppeteer con Stealth...");

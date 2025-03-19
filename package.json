@@ -4,7 +4,8 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "install-chrome": "node -e \"const {install} = require('@puppeteer/browsers'); install({browser: 'chrome', platform: 'linux', buildId: '134.0.6998.88', cacheDir: process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer'})\""
   },
   "keywords": [],
   "author": "",
